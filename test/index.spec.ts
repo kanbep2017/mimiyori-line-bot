@@ -1,6 +1,6 @@
 import { createExecutionContext, waitOnExecutionContext } from 'cloudflare:test';
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import worker, { type Env, verifySignature, cleanArticles, buildNews, sendLine, broadcastDailyNews, explicitCount, preferences, deliverReplies, planRequest, closeBrackets } from '../src/index';
+import worker, { type Env, verifySignature, cleanArticles, buildNews, sendLine, broadcastDailyNews, explicitCount, preferences, deliverReplies, planRequest, closeBrackets, splitSentences } from '../src/index';
 
 const makeEnv = (): Env => ({ AI: { run: vi.fn() }, LINE_CHANNEL_SECRET: 'test-secret', LINE_CHANNEL_ACCESS_TOKEN: 'test-token', TAVILY_API_KEY: 'test-tavily' });
 async function signed(raw: string, secret = 'test-secret') {
@@ -57,14 +57,24 @@ describe('game news worker', () => {
     expect(closeBrackets('普通の見出し')).toBe('普通の見出し');
     expect(closeBrackets('謎の閉じ』カッコ')).toBe('謎の閉じカッコ');
   });
-  it('builds the headline from content, not a portal-truncated title ending in "…"', async () => {
+  it('trusts the model headline over a portal-truncated title ending in "…", even when the headline is a paraphrase not found verbatim in content', async () => {
     const env = makeEnv();
-    vi.mocked(env.AI.run).mockResolvedValueOnce({ response: JSON.stringify({ topic: 'プリキュア' }) }).mockResolvedValueOnce({ response: '[0]' }).mockResolvedValueOnce({ response: JSON.stringify({ headline: '名探偵プリキュア！新情報が明らかに', highlights: ['新情報が明らかになった詳細な内容です。'] }) });
-    const truncated = { title: '真実のプロフィールにファン悶絶！名探偵プリキュア…', url: 'https://example.com/a', content: '名探偵プリキュア！新情報が明らかに。新情報が明らかになった詳細な内容です。' };
+    vi.mocked(env.AI.run).mockResolvedValueOnce({ response: JSON.stringify({ topic: 'プリキュア' }) }).mockResolvedValueOnce({ response: '[0]' }).mockResolvedValueOnce({ response: JSON.stringify({ headline: '名探偵プリキュア！新情報が明らかに', highlights: ['新しい設定が公開され話題になっている。'] }) });
+    const truncated = { title: '真実のプロフィールにファン悶絶！名探偵プリキュア…', url: 'https://example.com/a', content: '新しい設定が公開され話題になっている。詳細は記事本文を参照。' };
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(Response.json({ results: [truncated] }));
     const texts = await buildNews('プリキュアの記事を1件', false, env);
     expect(texts[0]).toContain('■ 名探偵プリキュア！新情報が明らかに');
     expect(texts[0]).not.toContain('…');
+  });
+  it('falls back to the article\'s own first sentence for the headline when the title is truncated and the model call fails', async () => {
+    const env = makeEnv();
+    vi.mocked(env.AI.run).mockResolvedValueOnce({ response: JSON.stringify({ topic: 'プリキュア' }) }).mockResolvedValueOnce({ response: '[0]' }).mockRejectedValueOnce(new Error('AI unavailable'));
+    const truncated = { title: '真実のプロフィールにファン悶絶！名探偵プリキュア…', url: 'https://example.com/a', content: 'キュアアルカナのプロフィール帳が公開された。ファンの間で話題になっている。' };
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(Response.json({ results: [truncated] }));
+    const texts = await buildNews('プリキュアの記事を1件', false, env);
+    expect(texts[0]).toContain('■ キュアアルカナのプロフィール帳が公開された。');
+    expect(texts[0]).not.toContain('…');
+    expect(texts[0]).toContain('ファンの間で話題になっている。');
   });
   it('marks the headline and keeps multiple highlights on tight consecutive lines', async () => {
     const env = makeEnv();
@@ -82,6 +92,28 @@ describe('game news worker', () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(Response.json({ results: [{ title: '東山奈央「森亜るるかの理解者として」', url: 'https://example.com/interview', content }] }));
     const texts = await buildNews('声優の記事を1件', false, env);
     expect(texts[0]).toContain('森亜るるかの声を担当していることが分かった');
+  });
+  it('splitSentences keeps a "！" whole when more title text follows before the closing bracket', () => {
+    expect(splitSentences('真実のプロフィールにファン悶絶！『映画名探偵プリキュア！不思議な庭と2人の秘密』公式X（旧Twitter）アカウントにて、プロフィールが公開された。次の話。'))
+      .toEqual(['真実のプロフィールにファン悶絶！', '『映画名探偵プリキュア！不思議な庭と2人の秘密』公式X（旧Twitter）アカウントにて、プロフィールが公開された。', '次の話。']);
+  });
+  it('strips a truncated URL fragment and tweet view-count/timestamp noise from the headline and highlights', async () => {
+    const env = makeEnv();
+    vi.mocked(env.AI.run).mockResolvedValueOnce({ response: JSON.stringify({ topic: 'プリキュア' }) }).mockResolvedValueOnce({ response: '[0]' }).mockResolvedValueOnce({ response: JSON.stringify({
+      headline: '『名探偵プリキュア』森亜るるか、仲間になったとたん犬に変身 先週までとのギャップに反響 https:/',
+      highlights: ['来週は本当の犬が登場！『わんぶり』犬飼こむぎ『キミプリ』妖精のプリルンがゲスト出演。2:33 AM · Sep 6, 202650.9K Views'],
+    }) });
+    const tweet = {
+      title: 'オリコンニュース【アニメ】 on X',
+      url: 'https://x.com/oricon_anime_/status/2096426537646178603',
+      content: '『名探偵プリキュア』森亜るるか、仲間になったとたん犬に変身 先週までとのギャップに反響 https://t.co/abcXYZ12345 '
+        + '来週は本当の犬が登場！『わんぶり』犬飼こむぎ『キミプリ』妖精のプリルンがゲスト出演。2:33 AM · Sep 6, 202650.9K Views',
+    };
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(Response.json({ results: [tweet] }));
+    const texts = await buildNews('プリキュアの記事を1件', false, env);
+    expect(texts[0]).not.toMatch(/https?:\/(?!\/)/); // no truncated "https:/" fragment (the real "https://" link is fine)
+    expect(texts[0]).not.toContain('Views');
+    expect(texts[0]).not.toMatch(/\d{4}[\d,.]*K/);
   });
   it('expands search, filters irrelevant articles and formats a bounded reply', async () => {
     const env = makeEnv();
