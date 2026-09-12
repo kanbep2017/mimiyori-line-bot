@@ -63,8 +63,8 @@ describe('game news worker', () => {
     const truncated = { title: '真実のプロフィールにファン悶絶！名探偵プリキュア…', url: 'https://example.com/a', content: '新しい設定が公開され話題になっている。詳細は記事本文を参照。' };
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(Response.json({ results: [truncated] }));
     const texts = await buildNews('プリキュアの記事を1件', false, env);
-    expect(texts[0]).toContain('■ 名探偵プリキュア！新情報が明らかに');
-    expect(texts[0]).not.toContain('…');
+    expect(texts[1]).toContain('■ 名探偵プリキュア！新情報が明らかに');
+    expect(texts[1]).not.toContain('…');
   });
   it('falls back to the article\'s own first sentence for the headline when the title is truncated and the model call fails', async () => {
     const env = makeEnv();
@@ -72,9 +72,9 @@ describe('game news worker', () => {
     const truncated = { title: '真実のプロフィールにファン悶絶！名探偵プリキュア…', url: 'https://example.com/a', content: 'キュアアルカナのプロフィール帳が公開された。ファンの間で話題になっている。' };
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(Response.json({ results: [truncated] }));
     const texts = await buildNews('プリキュアの記事を1件', false, env);
-    expect(texts[0]).toContain('■ キュアアルカナのプロフィール帳が公開された。');
-    expect(texts[0]).not.toContain('…');
-    expect(texts[0]).toContain('ファンの間で話題になっている。');
+    expect(texts[1]).toContain('■ キュアアルカナのプロフィール帳が公開された。');
+    expect(texts[1]).not.toContain('…');
+    expect(texts[1]).toContain('ファンの間で話題になっている。');
   });
   it('marks the headline and keeps multiple highlights on tight consecutive lines', async () => {
     const env = makeEnv();
@@ -82,8 +82,20 @@ describe('game news worker', () => {
     const richArticle = { title: '新作ゲームを発表：キングダムハーツ最新ニュース', url: 'https://example.com/b', content: '詳細情報その1です。詳細情報その2です。' };
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(Response.json({ results: [richArticle] }));
     const texts = await buildNews('ゲームの記事を1件', false, env);
-    expect(texts[0]).toContain('■ 新作ゲームを発表');
-    expect(texts[0]).toContain('詳細情報その1です。\n詳細情報その2です。');
+    expect(texts[1]).toContain('■ 新作ゲームを発表');
+    expect(texts[1]).toContain('詳細情報その1です。\n詳細情報その2です。');
+  });
+  it('drops a highlight that is just the leading sentence already contained in another highlight', async () => {
+    const env = makeEnv();
+    vi.mocked(env.AI.run).mockResolvedValueOnce({ response: JSON.stringify({ topic: 'AIコーディングツール' }) }).mockResolvedValueOnce({ response: '[0]' }).mockResolvedValueOnce({ response: JSON.stringify({
+      headline: 'AIコーディングツール比較まとめ',
+      highlights: ['エディタの中でAIと会話しながらコードを書きたい方にはCursorが入りやすい。GitHub上でissue管理しているチームはCopilotとの相性が高い。', 'エディタの中でAIと会話しながらコードを書きたい方にはCursorが入りやすい。'],
+    }) });
+    const richArticle = { title: 'AIコーディングツール比較2026年4月版', url: 'https://example.com/tools', content: 'エディタの中でAIと会話しながらコードを書きたい方にはCursorが入りやすい。GitHub上でissue管理しているチームはCopilotとの相性が高い。' };
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(Response.json({ results: [richArticle] }));
+    const texts = await buildNews('AIコーディングツールの記事を1件', false, env);
+    const occurrences = texts[1].split('エディタの中でAIと会話しながらコードを書きたい方にはCursorが入りやすい。').length - 1;
+    expect(occurrences).toBe(1);
   });
   it('does not chop a fallback sentence at a quoted title ending in "！" or "？"', async () => {
     const env = makeEnv();
@@ -91,7 +103,7 @@ describe('game news worker', () => {
     vi.mocked(env.AI.run).mockResolvedValueOnce({ response: JSON.stringify({ topic: '声優' }) }).mockResolvedValueOnce({ response: '[0]' }).mockRejectedValueOnce(new Error('AI unavailable'));
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(Response.json({ results: [{ title: '東山奈央「森亜るるかの理解者として」', url: 'https://example.com/interview', content }] }));
     const texts = await buildNews('声優の記事を1件', false, env);
-    expect(texts[0]).toContain('森亜るるかの声を担当していることが分かった');
+    expect(texts[1]).toContain('森亜るるかの声を担当していることが分かった');
   });
   it('splitSentences keeps a "！" whole when more title text follows before the closing bracket', () => {
     expect(splitSentences('真実のプロフィールにファン悶絶！『映画名探偵プリキュア！不思議な庭と2人の秘密』公式X（旧Twitter）アカウントにて、プロフィールが公開された。次の話。'))
@@ -111,9 +123,9 @@ describe('game news worker', () => {
     };
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(Response.json({ results: [tweet] }));
     const texts = await buildNews('プリキュアの記事を1件', false, env);
-    expect(texts[0]).not.toMatch(/https?:\/(?!\/)/); // no truncated "https:/" fragment (the real "https://" link is fine)
-    expect(texts[0]).not.toContain('Views');
-    expect(texts[0]).not.toMatch(/\d{4}[\d,.]*K/);
+    expect(texts[1]).not.toMatch(/https?:\/(?!\/)/); // no truncated "https:/" fragment (the real "https://" link is fine)
+    expect(texts[1]).not.toContain('Views');
+    expect(texts[1]).not.toMatch(/\d{4}[\d,.]*K/);
   });
   it('does not use an X/Twitter "Account on X: \\"tweet\\"" page title verbatim as the headline, and drops a bare @handle highlight', async () => {
     const env = makeEnv();
@@ -129,9 +141,9 @@ describe('game news worker', () => {
     };
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(Response.json({ results: [tweet] }));
     const texts = await buildNews('プリキュアの記事を1件', false, env);
-    expect(texts[0]).toContain('■ 名探偵プリキュアの森亜るるか、仲間になったら犬に変身！');
-    expect(texts[0]).not.toContain('on X');
-    expect(texts[0]).not.toContain('@oricon');
+    expect(texts[1]).toContain('■ 名探偵プリキュアの森亜るるか、仲間になったら犬に変身！');
+    expect(texts.join('\n')).not.toContain('on X');
+    expect(texts.join('\n')).not.toContain('@oricon');
   });
   it('expands search, filters irrelevant articles and formats a bounded reply', async () => {
     const env = makeEnv();
@@ -140,11 +152,11 @@ describe('game news worker', () => {
     const result = await buildNews('ディズニーのゲーム', false, env);
     expect(spy).toHaveBeenCalledTimes(2);
     expect(JSON.parse(String(spy.mock.calls[0][1]?.body))).toMatchObject({ time_range: 'week', search_depth: 'basic' });
-    expect(result).toHaveLength(1);
-    expect(result[0]).toContain('キングダム ハーツの新情報');
-    expect(result[0]).toContain('記事を読む ↗\nhttps://example.com/news/article-1');
-    expect(result[0].match(/https:\/\//g)).toHaveLength(1);
-    expect(result[0].length).toBeLessThanOrEqual(4900);
+    expect(result).toHaveLength(2);
+    expect(result[1]).toContain('キングダム ハーツの新情報');
+    expect(result[1]).toContain('記事を読む ↗\nhttps://example.com/news/article-1');
+    expect(result[1].match(/https:\/\//g)).toHaveLength(1);
+    expect(result[1].length).toBeLessThanOrEqual(4900);
   });
   it('does not substitute irrelevant news for an unknown game', async () => {
     const env = makeEnv();
@@ -156,7 +168,7 @@ describe('game news worker', () => {
     const env = makeEnv();
     vi.mocked(env.AI.run).mockResolvedValueOnce({ response: '[0]' }).mockRejectedValueOnce(new Error('AI unavailable'));
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(Response.json({ results: [article] }));
-    expect((await buildNews('ゲームニュース', true, env))[0]).toContain('新しいゲーム情報が発表された');
+    expect((await buildNews('ゲームニュース', true, env))[1]).toContain('新しいゲーム情報が発表された');
   });
   it('reports LINE HTTP errors', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('{}', { status: 401 }));
@@ -169,7 +181,7 @@ describe('game news worker', () => {
     await broadcastDailyNews(env);
     expect(JSON.parse(String(spy.mock.calls[0][1]?.body)).time_range).toBe('day');
     expect(String(spy.mock.calls[1][0])).toContain('/broadcast');
-    expect(JSON.parse(String(spy.mock.calls[1][1]?.body)).messages[0].text).toContain('新しいゲーム情報が発表された');
+    expect(JSON.parse(String(spy.mock.calls[1][1]?.body)).messages[1].text).toContain('新しいゲーム情報が発表された');
   });
   it('does not broadcast on upstream failure', async () => {
     const spy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('{}', { status: 429 }));
@@ -231,8 +243,8 @@ describe('game news worker', () => {
       .mockResolvedValue({ response: JSON.stringify({ headline: '新情報を発表', highlights: ['詳細は後日公開予定'] }) });
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(Response.json({ results: Array.from({ length: 3 }, (_, i) => ({ ...article, title: `${article.title} その${i}`, url: `https://example.com/${i}` })) }));
     const texts = await buildNews('名探偵プリキュアに関するニュースを3件', false, env);
-    expect(texts).toHaveLength(3);
-    texts.forEach(t => expect(t.match(/https:\/\//g)).toHaveLength(1));
+    expect(texts).toHaveLength(4); // 1 theme heading + 3 articles
+    texts.slice(1).forEach(t => expect(t.match(/https:\/\//g)).toHaveLength(1));
   });
   it('skips redelivered webhook events without sending or calling any external service', async () => {
     const env = makeEnv();
@@ -291,8 +303,8 @@ describe('game news worker', () => {
     vi.mocked(env.AI.run).mockResolvedValueOnce({ response: JSON.stringify({ topic: 'ゲーム' }) }).mockResolvedValueOnce({ response: '[0,1,2,3,4]' }).mockResolvedValue({ response: JSON.stringify({ headline: '新作ゲームを発表', highlights: ['新しい遊び方が登場'] }) });
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(Response.json({ results: Array.from({ length: 5 }, (_, i) => ({ ...article, title: `${article.title} その${i}`, url: `https://example.com/${i}` })) }));
     const texts = await buildNews('ゲームの記事を5件', false, env);
-    expect(texts).toHaveLength(5);
-    texts.forEach(text => expect(text.match(/https:\/\//g)).toHaveLength(1));
+    expect(texts).toHaveLength(6); // 1 theme heading + 5 articles
+    texts.slice(1).forEach(text => expect(text.match(/https:\/\//g)).toHaveLength(1));
     texts.forEach(text => expect(text.split('\n')[0]).not.toMatch(/\d+\s*\/\s*\d+/));
   });
   it('fills in a second highlight from the article body when the model returns only a thin one', async () => {
@@ -301,8 +313,8 @@ describe('game news worker', () => {
     vi.mocked(env.AI.run).mockResolvedValueOnce({ response: JSON.stringify({ topic: '声優' }) }).mockResolvedValueOnce({ response: '[0]' }).mockResolvedValueOnce({ response: JSON.stringify({ headline: '声優インタビュー特集記事', highlights: ['東山奈央さんが新作アニメについて語った。'] }) });
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(Response.json({ results: [richArticle] }));
     const texts = await buildNews('声優の記事を1件', false, env);
-    expect(texts[0]).toContain('東山奈央さんが新作アニメについて語った');
-    expect(texts[0]).toContain('撮影は来月から開始される予定です');
+    expect(texts[1]).toContain('東山奈央さんが新作アニメについて語った');
+    expect(texts[1]).toContain('撮影は来月から開始される予定です');
   });
   it('drops a search result that is the same headline as an already-selected article from another outlet', async () => {
     const env = makeEnv();
@@ -312,8 +324,8 @@ describe('game news worker', () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(Response.json({ results: [article, reprint, distinct] }));
     const texts = await buildNews('名探偵プリキュアの記事を2件', false, env);
     // Only 2 distinct articles existed after de-duplication, so selectRelevant only ever saw 2 candidates.
-    expect(texts).toHaveLength(2);
-    expect(new Set(texts.map(t => t.match(/https:\/\/\S+/)?.[0])).size).toBe(2);
+    expect(texts).toHaveLength(3); // 1 theme heading + 2 articles
+    expect(new Set(texts.slice(1).map(t => t.match(/https:\/\/\S+/)?.[0])).size).toBe(2);
   });
   it('combines only when requested and explains article shortages', async () => {
     const env = makeEnv();
@@ -353,7 +365,9 @@ describe('game news worker', () => {
     });
     const spy = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => Response.json({ results: [article] }));
     const texts = await buildNews('アニメとゲームの情報', false, env);
-    expect(texts).toHaveLength(2);
+    // The mocked article's text doesn't match the アニメ keyword filter, so that group finds no
+    // candidates and stays a single "not found" message; ゲーム matches and splits into 2 messages.
+    expect(texts).toHaveLength(3);
     expect(texts[0]).toContain('📺 アニメ');
     expect(texts[1]).toContain('🎮 ゲーム');
     expect(JSON.parse(String(spy.mock.calls[0][1]?.body)).query).toBe('アニメ');
@@ -363,9 +377,33 @@ describe('game news worker', () => {
     vi.mocked(env.AI.run).mockResolvedValueOnce({ response: { topic: 'ゲーム' } }).mockResolvedValueOnce({ response: { ids: [0] } }).mockResolvedValueOnce({ response: { headline: '本日リリース', highlights: ['無料で配信開始しました'] } });
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(Response.json({ results: [article] }));
     const texts = await buildNews('ゲームの記事を1件', false, env);
-    expect(texts[0]).not.toContain('無料で配信開始');
-    expect(texts[0]).not.toContain('本日リリース');
-    expect(texts[0]).toContain('新しいゲーム情報が発表された');
+    expect(texts.join('\n')).not.toContain('無料で配信開始');
+    expect(texts.join('\n')).not.toContain('本日リリース');
+    expect(texts[1]).toContain('新しいゲーム情報が発表された');
+  });
+  it('sends the theme heading as its own decorated message, separate from the articles, and does not cut it mid-word', async () => {
+    const env = makeEnv();
+    const longQuery = 'リーズナブルに使えるコードを書けるAIについて知りたい。ClaudeCodeやCodexなどあるが、後者は比較的すぐに使い切ってしまう。';
+    vi.mocked(env.AI.run).mockResolvedValueOnce({ response: JSON.stringify({ topic: longQuery }) }).mockResolvedValueOnce({ response: '[0]' }).mockResolvedValueOnce({ response: JSON.stringify({ headline: 'AIコーディングツール比較まとめ', highlights: ['詳細な比較情報です。'] }) });
+    const richArticle = { title: 'AIコーディングツール比較記事', url: 'https://example.com/tools', content: '詳細な比較情報です。' };
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(Response.json({ results: [richArticle] }));
+    const texts = await buildNews(longQuery, false, env);
+    expect(texts).toHaveLength(2);
+    expect(texts[0]).toContain('──────────');
+    expect(texts[0]).not.toContain('■');
+    expect(texts[1]).not.toContain('──────────');
+    // Regression: this exact query used to get hard-cut mid-word as "…後者は比較" (see reported bug).
+    expect(texts[0]).not.toContain('後者は比較');
+    expect(texts[0].split('\n')[0]).toMatch(/[。、]$/); // ends at a natural break, not mid-word
+  });
+  it('uses the model-provided short label as the heading instead of truncating the raw question', async () => {
+    const env = makeEnv();
+    const longQuery = 'リーズナブルに使えるコードを書けるAIについて知りたい。ClaudeCodeやCodexなどあるが、後者は比較的すぐに使い切ってしまう。';
+    vi.mocked(env.AI.run).mockResolvedValueOnce({ response: JSON.stringify({ topic: longQuery, label: 'リーズナブルなコード生成AI' }) }).mockResolvedValueOnce({ response: '[0]' }).mockResolvedValueOnce({ response: JSON.stringify({ headline: 'AIコーディングツール比較まとめ', highlights: ['詳細な比較情報です。'] }) });
+    const richArticle = { title: 'AIコーディングツール比較記事', url: 'https://example.com/tools', content: '詳細な比較情報です。' };
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(Response.json({ results: [richArticle] }));
+    const texts = await buildNews(longQuery, false, env);
+    expect(texts[0]).toBe('📚 リーズナブルなコード生成AI\n──────────');
   });
   it('excludes news homepages and archive pages before selection', async () => {
     const env = makeEnv();
