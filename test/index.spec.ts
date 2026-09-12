@@ -1,6 +1,6 @@
 import { createExecutionContext, waitOnExecutionContext } from 'cloudflare:test';
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import worker, { type Env, verifySignature, cleanArticles, buildNews, sendLine, broadcastDailyNews, explicitCount, preferences, deliverReplies, planRequest, closeBrackets, splitSentences } from '../src/index';
+import worker, { type Env, verifySignature, cleanArticles, buildNews, sendLine, broadcastDailyNews, explicitCount, preferences, deliverReplies, planRequest, closeBrackets, splitSentences, AiUnavailableError } from '../src/index';
 
 const makeEnv = (): Env => ({ AI: { run: vi.fn() }, LINE_CHANNEL_SECRET: 'test-secret', LINE_CHANNEL_ACCESS_TOKEN: 'test-token', TAVILY_API_KEY: 'test-tavily' });
 async function signed(raw: string, secret = 'test-secret') {
@@ -115,6 +115,24 @@ describe('game news worker', () => {
     expect(texts[0]).not.toContain('Views');
     expect(texts[0]).not.toMatch(/\d{4}[\d,.]*K/);
   });
+  it('does not use an X/Twitter "Account on X: \\"tweet\\"" page title verbatim as the headline, and drops a bare @handle highlight', async () => {
+    const env = makeEnv();
+    vi.mocked(env.AI.run).mockResolvedValueOnce({ response: JSON.stringify({ topic: 'プリキュア' }) }).mockResolvedValueOnce({ response: '[0]' }).mockResolvedValueOnce({ response: JSON.stringify({
+      headline: '名探偵プリキュアの森亜るるか、仲間になったら犬に変身！',
+      highlights: ['@oricon＿anime＿', '来週は本物の犬が登場！『わんぶり』犬飼こむぎ『キミプリ』妖精のプリルンがゲスト出演。'],
+    }) });
+    const tweet = {
+      title: 'オリコンニュース【アニメ】 on X: "『名探偵プリキュア』森亜るるか、仲間になったとたん犬に変身　先週までとのギャップに反響"',
+      url: 'https://x.com/oricon_anime_/status/2096426537646178603',
+      content: '『名探偵プリキュア』森亜るるか、仲間になったとたん犬に変身　先週までとのギャップに反響。'
+        + '来週は本物の犬が登場！『わんぶり』犬飼こむぎ『キミプリ』妖精のプリルンがゲスト出演。@oricon＿anime＿',
+    };
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(Response.json({ results: [tweet] }));
+    const texts = await buildNews('プリキュアの記事を1件', false, env);
+    expect(texts[0]).toContain('■ 名探偵プリキュアの森亜るるか、仲間になったら犬に変身！');
+    expect(texts[0]).not.toContain('on X');
+    expect(texts[0]).not.toContain('@oricon');
+  });
   it('expands search, filters irrelevant articles and formats a bounded reply', async () => {
     const env = makeEnv();
     vi.mocked(env.AI.run).mockResolvedValueOnce({ response: JSON.stringify({ topic: 'ディズニー', expanded: 'キングダム ハーツ ニュース', timeRange: 'week' }) }).mockResolvedValueOnce({ response: '[0]' }).mockResolvedValueOnce({ response: JSON.stringify({ headline: 'キングダム ハーツ、新情報を発表', highlights: ['詳細は後日公開予定'] }) });
@@ -225,6 +243,23 @@ describe('game news worker', () => {
     await waitOnExecutionContext(ctx);
     expect(env.AI.run).not.toHaveBeenCalled();
     expect(spy).not.toHaveBeenCalled();
+  });
+  it('buildNews rejects with AiUnavailableError specifically when the sole group fails on an AI capacity/quota error', async () => {
+    const env = makeEnv();
+    vi.mocked(env.AI.run).mockResolvedValueOnce({ response: JSON.stringify({ topic: 'プリキュア' }) }).mockRejectedValueOnce(new Error('Workers AI capacity temporary limit exceeded'));
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(Response.json({ results: [article] }));
+    await expect(buildNews('プリキュアの記事を1件', false, env)).rejects.toBeInstanceOf(AiUnavailableError);
+  });
+  it('replies with a clear "AI usage limit" message over LINE when Workers AI capacity is exhausted', async () => {
+    const env = makeEnv();
+    vi.mocked(env.AI.run).mockResolvedValueOnce({ response: JSON.stringify({ topic: 'プリキュア' }) }).mockRejectedValueOnce(new Error('rate limit exceeded, please retry later'));
+    const spy = vi.spyOn(globalThis, 'fetch').mockImplementation(async url => String(url).includes('tavily') ? Response.json({ results: [article] }) : new Response('{}'));
+    const body = JSON.stringify({ events: [{ type: 'message', message: { type: 'text', text: 'プリキュアの記事を1件' }, replyToken: 'reply-token', source: { type: 'user', userId: 'u1' } }] });
+    const ctx = createExecutionContext();
+    await worker.fetch(new Request('https://example.com/', { method: 'POST', headers: { 'x-line-signature': await signed(body) }, body }), env, ctx);
+    await waitOnExecutionContext(ctx);
+    const replyCall = spy.mock.calls.find(c => String(c[0]).includes('/message/reply'));
+    expect(JSON.parse(String(replyCall?.[1]?.body)).messages[0].text).toContain('利用上限');
   });
   it('replies with the help text for "使い方" without running a search', async () => {
     const env = makeEnv();
