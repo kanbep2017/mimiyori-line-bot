@@ -1,6 +1,6 @@
 import { createExecutionContext, waitOnExecutionContext } from 'cloudflare:test';
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import worker, { type Env, verifySignature, cleanArticles, buildNews, sendLine, broadcastDailyNews, explicitCount, preferences, deliverReplies, planRequest } from '../src/index';
+import worker, { type Env, verifySignature, cleanArticles, buildNews, sendLine, broadcastDailyNews, explicitCount, preferences, deliverReplies, planRequest, closeBrackets } from '../src/index';
 
 const makeEnv = (): Env => ({ AI: { run: vi.fn() }, LINE_CHANNEL_SECRET: 'test-secret', LINE_CHANNEL_ACCESS_TOKEN: 'test-token', TAVILY_API_KEY: 'test-tavily' });
 async function signed(raw: string, secret = 'test-secret') {
@@ -45,6 +45,17 @@ describe('game news worker', () => {
   });
   it('deduplicates tracking URLs and excludes unsafe or empty results', () => {
     expect(cleanArticles([article, { ...article, url: article.url + '?utm_source=test#top' }, { ...article, url: 'javascript:alert(1)' }, { ...article, content: '' }])).toEqual([article]);
+  });
+  it('treats a portal reprint of the same headline under a different URL as one article', () => {
+    const reprint = { ...article, url: 'https://news.example.co.jp/articles/abc123' };
+    expect(cleanArticles([article, reprint])).toEqual([article]);
+    const distinct = { ...article, title: '全く別の見出しのニュース記事', url: 'https://example.com/other' };
+    expect(cleanArticles([article, distinct])).toEqual([article, distinct]);
+  });
+  it('closeBrackets trims a trailing unmatched bracket without touching balanced ones', () => {
+    expect(closeBrackets('速報「新情報が決定」（ABEMA TI')).toBe('速報「新情報が決定」');
+    expect(closeBrackets('普通の見出し')).toBe('普通の見出し');
+    expect(closeBrackets('謎の閉じ』カッコ')).toBe('謎の閉じカッコ');
   });
   it('expands search, filters irrelevant articles and formats a bounded reply', async () => {
     const env = makeEnv();
@@ -142,7 +153,7 @@ describe('game news worker', () => {
     ] }) })
       .mockResolvedValueOnce({ response: '[0,1,2]' })
       .mockResolvedValue({ response: JSON.stringify({ headline: '新情報を発表', highlights: ['詳細は後日公開予定'] }) });
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue(Response.json({ results: Array.from({ length: 3 }, (_, i) => ({ ...article, url: `https://example.com/${i}` })) }));
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(Response.json({ results: Array.from({ length: 3 }, (_, i) => ({ ...article, title: `${article.title} その${i}`, url: `https://example.com/${i}` })) }));
     const texts = await buildNews('名探偵プリキュアに関するニュースを3件', false, env);
     expect(texts).toHaveLength(3);
     texts.forEach(t => expect(t.match(/https:\/\//g)).toHaveLength(1));
@@ -160,15 +171,27 @@ describe('game news worker', () => {
   it('returns five articles as five messages, each with one source link', async () => {
     const env = makeEnv();
     vi.mocked(env.AI.run).mockResolvedValueOnce({ response: JSON.stringify({ topic: 'ゲーム' }) }).mockResolvedValueOnce({ response: '[0,1,2,3,4]' }).mockResolvedValue({ response: JSON.stringify({ headline: '新作ゲームを発表', highlights: ['新しい遊び方が登場'] }) });
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue(Response.json({ results: Array.from({ length: 5 }, (_, i) => ({ ...article, url: `https://example.com/${i}` })) }));
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(Response.json({ results: Array.from({ length: 5 }, (_, i) => ({ ...article, title: `${article.title} その${i}`, url: `https://example.com/${i}` })) }));
     const texts = await buildNews('ゲームの記事を5件', false, env);
     expect(texts).toHaveLength(5);
     texts.forEach(text => expect(text.match(/https:\/\//g)).toHaveLength(1));
+    texts.forEach(text => expect(text.split('\n')[0]).not.toMatch(/\d+\s*\/\s*\d+/));
+  });
+  it('drops a search result that is the same headline as an already-selected article from another outlet', async () => {
+    const env = makeEnv();
+    const reprint = { ...article, title: article.title, url: 'https://news.example.co.jp/articles/xyz789' };
+    const distinct = { ...article, title: '名探偵プリキュア 声優コメント特集', url: 'https://example.com/interview' };
+    vi.mocked(env.AI.run).mockResolvedValueOnce({ response: JSON.stringify({ topic: '名探偵プリキュア' }) }).mockResolvedValueOnce({ response: '[0,1]' }).mockResolvedValue({ response: JSON.stringify({ headline: '新情報を発表', highlights: ['詳細は後日公開予定'] }) });
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(Response.json({ results: [article, reprint, distinct] }));
+    const texts = await buildNews('名探偵プリキュアの記事を2件', false, env);
+    // Only 2 distinct articles existed after de-duplication, so selectRelevant only ever saw 2 candidates.
+    expect(texts).toHaveLength(2);
+    expect(new Set(texts.map(t => t.match(/https:\/\/\S+/)?.[0])).size).toBe(2);
   });
   it('combines only when requested and explains article shortages', async () => {
     const env = makeEnv();
     vi.mocked(env.AI.run).mockResolvedValueOnce({ response: JSON.stringify({ topic: 'ゲーム', combined: true }) }).mockResolvedValueOnce({ response: '[0,1]' }).mockResolvedValue({ response: JSON.stringify({ headline: '新作発表', highlights: [] }) });
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue(Response.json({ results: [article, { ...article, url: 'https://example.com/second' }] }));
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(Response.json({ results: [article, { ...article, title: 'キングダム ハーツの続報', url: 'https://example.com/second' }] }));
     const texts = await buildNews('記事を5件、1つのメッセージにまとめて、見出しだけ', false, env);
     expect(texts).toHaveLength(1);
     expect(texts[0]).toContain('確認できた関連記事は2件');
