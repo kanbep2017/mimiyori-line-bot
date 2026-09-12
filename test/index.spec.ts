@@ -57,6 +57,24 @@ describe('game news worker', () => {
     expect(closeBrackets('普通の見出し')).toBe('普通の見出し');
     expect(closeBrackets('謎の閉じ』カッコ')).toBe('謎の閉じカッコ');
   });
+  it('builds the headline from content, not a portal-truncated title ending in "…"', async () => {
+    const env = makeEnv();
+    vi.mocked(env.AI.run).mockResolvedValueOnce({ response: JSON.stringify({ topic: 'プリキュア' }) }).mockResolvedValueOnce({ response: '[0]' }).mockResolvedValueOnce({ response: JSON.stringify({ headline: '名探偵プリキュア！新情報が明らかに', highlights: ['新情報が明らかになった詳細な内容です。'] }) });
+    const truncated = { title: '真実のプロフィールにファン悶絶！名探偵プリキュア…', url: 'https://example.com/a', content: '名探偵プリキュア！新情報が明らかに。新情報が明らかになった詳細な内容です。' };
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(Response.json({ results: [truncated] }));
+    const texts = await buildNews('プリキュアの記事を1件', false, env);
+    expect(texts[0]).toContain('■ 名探偵プリキュア！新情報が明らかに');
+    expect(texts[0]).not.toContain('…');
+  });
+  it('marks the headline and keeps multiple highlights on tight consecutive lines', async () => {
+    const env = makeEnv();
+    vi.mocked(env.AI.run).mockResolvedValueOnce({ response: JSON.stringify({ topic: 'ゲーム' }) }).mockResolvedValueOnce({ response: '[0]' }).mockResolvedValueOnce({ response: JSON.stringify({ headline: '新作ゲームを発表', highlights: ['詳細情報その1です。', '詳細情報その2です。'] }) });
+    const richArticle = { title: '新作ゲームを発表：キングダムハーツ最新ニュース', url: 'https://example.com/b', content: '詳細情報その1です。詳細情報その2です。' };
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(Response.json({ results: [richArticle] }));
+    const texts = await buildNews('ゲームの記事を1件', false, env);
+    expect(texts[0]).toContain('■ 新作ゲームを発表');
+    expect(texts[0]).toContain('詳細情報その1です。\n詳細情報その2です。');
+  });
   it('does not chop a fallback sentence at a quoted title ending in "！" or "？"', async () => {
     const env = makeEnv();
     const content = '東山奈央さんが、アニメ「名探偵プリキュア！」でキュアアルカナ・シャドウ役を演じる森亜るるかの声を担当していることが分かった。放送は9月13日を予定している。';
@@ -175,6 +193,31 @@ describe('game news worker', () => {
     await waitOnExecutionContext(ctx);
     expect(env.AI.run).not.toHaveBeenCalled();
     expect(spy).not.toHaveBeenCalled();
+  });
+  it('replies with the help text for "使い方" without running a search', async () => {
+    const env = makeEnv();
+    const spy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('{}'));
+    const body = JSON.stringify({ events: [{ type: 'message', message: { type: 'text', text: '使い方' }, replyToken: 'reply-token', source: { type: 'user', userId: 'u1' } }] });
+    const ctx = createExecutionContext();
+    expect((await worker.fetch(new Request('https://example.com/', { method: 'POST', headers: { 'x-line-signature': await signed(body) }, body }), env, ctx)).status).toBe(200);
+    await waitOnExecutionContext(ctx);
+    expect(env.AI.run).not.toHaveBeenCalled();
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(String(spy.mock.calls[0][0])).toContain('/message/reply');
+    expect(JSON.parse(String(spy.mock.calls[0][1]?.body)).messages[0].text).toContain('件数を指定しなければ3件');
+  });
+  it('recognizes help triggers with trailing punctuation or different wording', async () => {
+    const env = makeEnv();
+    const spy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('{}'));
+    const body = JSON.stringify({ events: [
+      { type: 'message', message: { type: 'text', text: 'ヘルプ？' }, replyToken: 'r1', source: { type: 'user', userId: 'u1' } },
+      { type: 'message', message: { type: 'text', text: 'Help' }, replyToken: 'r2', source: { type: 'user', userId: 'u1' } },
+    ] });
+    const ctx = createExecutionContext();
+    await worker.fetch(new Request('https://example.com/', { method: 'POST', headers: { 'x-line-signature': await signed(body) }, body }), env, ctx);
+    await waitOnExecutionContext(ctx);
+    expect(env.AI.run).not.toHaveBeenCalled();
+    expect(spy).toHaveBeenCalledTimes(2);
   });
   it('returns five articles as five messages, each with one source link', async () => {
     const env = makeEnv();

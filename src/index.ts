@@ -33,6 +33,9 @@ export function closeBrackets(text: string): string {
   return out.trimEnd();
 }
 
+const HELP_TRIGGERS = new Set(['使い方', 'つかいかた', 'ヘルプ', 'help', '説明', 'できること', '何ができる', 'なにができる', 'コマンド']);
+const HELP_TEXT = 'こんにちは、みみよりです🐰\n\n知りたい話題を送ってもらえれば、関連する記事を探してお届けします。\n\n【基本】\n・件数を指定しなければ3件お届けします\n・「5件」のように数を指定できます\n・1記事＝1メッセージ＋1リンクです\n\n【表示の指定】\n・「短く」「詳しく」\n・「見出しだけ」\n・「1つのメッセージにまとめて」\n\n【複数まとめて】\n例）「フリーレンみたいなアニメの記事を2件と、ゼルダみたいなゲームの記事を3件」\n\n【対象ジャンル】\nゲームに限らず、アニメ・映画などいろいろな話題に対応しています。\n\n毎日12時ごろには、ゲームの新作・アップデート情報を自動でお届けします。\n\nこの説明はいつでも「使い方」と送ると呼び出せます。';
+
 async function limited<T>(promise: Promise<T>, ms: number): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
@@ -78,7 +81,13 @@ export default {
       const token = short(ev.replyToken, 256);
       const source = record(ev.source);
       const to = short(source.type === 'group' ? source.groupId : source.type === 'room' ? source.roomId : source.userId, 64);
-      if (query && token) ctx.waitUntil(handleSearch(query, token, env, to));
+      if (!query || !token) continue;
+      if (HELP_TRIGGERS.has(query.trim().replace(/[?？!！。.、\s]+$/g, '').toLowerCase())) {
+        ctx.waitUntil(sendLine('reply', { replyToken: token, messages: [{ type: 'text', text: HELP_TEXT }] }, env)
+          .catch(error => console.error('help_reply_failed', error instanceof Error ? error.message : 'Unknown error')));
+        continue;
+      }
+      ctx.waitUntil(handleSearch(query, token, env, to));
     }
     return new Response('OK');
   },
@@ -219,7 +228,11 @@ async function summarize(item: Article, env: Env, style: string): Promise<{ head
   const normalize = (value: string) => value.normalize('NFKC').replace(/[\s\p{P}\p{S}]/gu, '').toLowerCase();
   const source = normalize(item.content);
   const headlineOnly = /見出し(?:だけ|のみ)|タイトル(?:だけ|のみ)/.test(style);
-  const sourceHeadline = closeBrackets(item.title.replace(/\s+[|｜]\s+.*$/, '').slice(0, 75));
+  // Search portals sometimes index an already-truncated title ("...キュア…"). Don't validate the
+  // model's headline against that broken text — check it against the real article body instead.
+  const ellipsis = /(…|\.{3,})\s*$/;
+  const titleTruncated = ellipsis.test(item.title.trim());
+  const sourceHeadline = closeBrackets(item.title.replace(/\s+[|｜]\s+.*$/, '').replace(ellipsis, '').trim().slice(0, 75));
   // Don't split right after 。！？ when it's immediately followed by a closing bracket/quote
   // (e.g. "「名探偵プリキュア！」") — that punctuation ends a quoted title, not the sentence.
   const fallbackHighlights = item.content.replace(/#{1,6}\s*/g, '').split(/(?<=[。！？])(?![」』）\)])|\n+/).map(x => x.trim()).filter(x => x.length >= 15 && !/https?:|^\||の画像|ログイン/.test(x));
@@ -231,7 +244,8 @@ async function summarize(item: Article, env: Env, style: string): Promise<{ head
     const parsed = record(JSON.parse(result.match(/\{[\s\S]*\}/)?.[0] || 'null'));
     const plain = (text: string) => text.replace(/https?:\/\/\S+/g, '').replace(/\s+/g, ' ').trim();
     const candidateHeadline = closeBrackets(plain(short(parsed.headline, 60)));
-    const headline = normalize(item.title).includes(normalize(candidateHeadline)) && candidateHeadline ? candidateHeadline : sourceHeadline;
+    const headlineBasis = titleTruncated ? source : normalize(item.title);
+    const headline = candidateHeadline && headlineBasis.includes(normalize(candidateHeadline)) ? candidateHeadline : sourceHeadline;
     const detailed = /詳しく|詳細|長め/.test(style);
     const wanted = detailed ? 4 : /短く|一言|簡潔/.test(style) ? 1 : 2;
     const capLen = detailed ? 280 : 170;
@@ -277,7 +291,7 @@ async function buildGroup(prefs: Preferences, daily: boolean, env: Env): Promise
   const shortage = prefs.explicitCount && selected.length < prefs.count ? `\n${prefs.count}件のご希望に対し、確認できた関連記事は${selected.length}件でした。` : '';
   const blocks = await Promise.all(selected.map(async item => {
     const copy = await summarize(item, env, prefs.style);
-    return `${copy.headline}${copy.highlights.length ? '\n\n' + copy.highlights.join('\n\n') : ''}\n\n記事を読む ↗\n${item.url}`;
+    return `■ ${copy.headline}${copy.highlights.length ? '\n\n' + copy.highlights.join('\n') : ''}\n\n記事を読む ↗\n${item.url}`;
   }));
   if (prefs.combined) {
     const combined = `${heading}${shortage}\n\n${blocks.map((b, i) => `${i + 1}. ${b}`).join('\n\n──────────\n\n')}`;
