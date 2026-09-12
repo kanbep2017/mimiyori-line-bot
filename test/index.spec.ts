@@ -177,6 +177,15 @@ describe('game news worker', () => {
     texts.forEach(text => expect(text.match(/https:\/\//g)).toHaveLength(1));
     texts.forEach(text => expect(text.split('\n')[0]).not.toMatch(/\d+\s*\/\s*\d+/));
   });
+  it('fills in a second highlight from the article body when the model returns only a thin one', async () => {
+    const env = makeEnv();
+    const richArticle = { title: '声優インタビュー特集記事', url: 'https://example.com/interview', content: '東山奈央さんが新作アニメについて語った。撮影は来月から開始される予定です。' };
+    vi.mocked(env.AI.run).mockResolvedValueOnce({ response: JSON.stringify({ topic: '声優' }) }).mockResolvedValueOnce({ response: '[0]' }).mockResolvedValueOnce({ response: JSON.stringify({ headline: '声優インタビュー特集記事', highlights: ['東山奈央さんが新作アニメについて語った。'] }) });
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(Response.json({ results: [richArticle] }));
+    const texts = await buildNews('声優の記事を1件', false, env);
+    expect(texts[0]).toContain('東山奈央さんが新作アニメについて語った');
+    expect(texts[0]).toContain('撮影は来月から開始される予定です');
+  });
   it('drops a search result that is the same headline as an already-selected article from another outlet', async () => {
     const env = makeEnv();
     const reprint = { ...article, title: article.title, url: 'https://news.example.co.jp/articles/xyz789' };
