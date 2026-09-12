@@ -57,6 +57,14 @@ describe('game news worker', () => {
     expect(closeBrackets('普通の見出し')).toBe('普通の見出し');
     expect(closeBrackets('謎の閉じ』カッコ')).toBe('謎の閉じカッコ');
   });
+  it('does not chop a fallback sentence at a quoted title ending in "！" or "？"', async () => {
+    const env = makeEnv();
+    const content = '東山奈央さんが、アニメ「名探偵プリキュア！」でキュアアルカナ・シャドウ役を演じる森亜るるかの声を担当していることが分かった。放送は9月13日を予定している。';
+    vi.mocked(env.AI.run).mockResolvedValueOnce({ response: JSON.stringify({ topic: '声優' }) }).mockResolvedValueOnce({ response: '[0]' }).mockRejectedValueOnce(new Error('AI unavailable'));
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(Response.json({ results: [{ title: '東山奈央「森亜るるかの理解者として」', url: 'https://example.com/interview', content }] }));
+    const texts = await buildNews('声優の記事を1件', false, env);
+    expect(texts[0]).toContain('森亜るるかの声を担当していることが分かった');
+  });
   it('expands search, filters irrelevant articles and formats a bounded reply', async () => {
     const env = makeEnv();
     vi.mocked(env.AI.run).mockResolvedValueOnce({ response: JSON.stringify({ topic: 'ディズニー', expanded: 'キングダム ハーツ ニュース', timeRange: 'week' }) }).mockResolvedValueOnce({ response: '[0]' }).mockResolvedValueOnce({ response: JSON.stringify({ headline: 'キングダム ハーツ、新情報を発表', highlights: ['詳細は後日公開予定'] }) });
